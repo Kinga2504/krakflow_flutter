@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'task_repository.dart';
+import 'services/task_api_service.dart';
 
 void main() {
   runApp(const MyApp());
@@ -80,7 +81,8 @@ class _EkranState extends State<Ekran> {
           ),
         ],
       ),
-      body: Column(
+      body: const TaskListScreen(),
+      /*Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
@@ -188,7 +190,7 @@ class _EkranState extends State<Ekran> {
             ),
           ),
         ],
-      ),
+      ),*/
       floatingActionButton: FloatingActionButton(
         onPressed: () async {
           final Task? newTask = await Navigator.push(
@@ -210,6 +212,38 @@ class _EkranState extends State<Ekran> {
         },
         child: const Icon(Icons.add),
       ),
+    );
+  }
+}
+
+class TaskListScreen extends StatelessWidget {
+  const TaskListScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<List<Task>>(
+      future: TaskApiService.fetchTasks(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(
+            child: CircularProgressIndicator(),
+          );
+        }
+
+        if (snapshot.hasError) {
+          return Center(
+            child: Text("Błąd: ${snapshot.error}"),
+          );
+        }
+
+        final tasks = snapshot.data!;
+
+        return ListView(
+          children: tasks.map((task) {
+            return Text(task.title);
+          }).toList(),
+        );
+      },
     );
   }
 }
