@@ -1,8 +1,16 @@
 import 'package:flutter/material.dart';
 import 'task_repository.dart';
-import 'services/task_api_service.dart';
+import 'package:hive_ce_flutter/hive_flutter.dart';
+import 'services/task_local_database.dart';
+import 'services/task_sync_service.dart';
+import 'dart:math';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  await Hive.initFlutter();
+  await Hive.openBox("tasks");
+
   runApp(const MyApp());
 }
 
@@ -25,17 +33,20 @@ class Ekran extends StatefulWidget {
 class _EkranState extends State<Ekran> {
   String selectedFilter = "wszystkie";
 
+  int allTasksCount = 0;
+  int doneTasksCount = 0;
+  int todoTasksCount = 0;
+
+  void updateCounters(List<Task> tasks) {
+    setState(() {
+      allTasksCount = tasks.length;
+      doneTasksCount = tasks.where((task) => task.done).length;
+      todoTasksCount = tasks.where((task) => !task.done).length;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
-    int doneCount = TaskRepository.tasks.where((task) => task.done).length;
-
-    List<Task> filteredTasks = TaskRepository.tasks;
-
-    if (selectedFilter == "wykonane") {
-      filteredTasks = TaskRepository.tasks.where((task) => task.done).toList();
-    } else if (selectedFilter == "do zrobienia") {
-      filteredTasks = TaskRepository.tasks.where((task) => !task.done).toList();
-    }
 
     return Scaffold(
       appBar: AppBar(
@@ -58,10 +69,10 @@ class _EkranState extends State<Ekran> {
                         child: Text("Anuluj"),
                       ),
                       TextButton(
-                        onPressed: () {
-                          setState(() {
-                            TaskRepository.tasks.clear();
-                          });
+                        onPressed: () async {
+                          await TaskLocalDatabase.deleteAllTasks();
+
+                          if (!context.mounted) return;
 
                           Navigator.pop(context);
 
@@ -81,116 +92,19 @@ class _EkranState extends State<Ekran> {
           ),
         ],
       ),
-      body: const TaskListScreen(),
-      /*Column(
+      body: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            "Masz dziś ${TaskRepository.tasks.length} zadania (${doneCount} wykonanych)",
+            "Wszystkie: $allTasksCount | Wykonane: $doneTasksCount | Do zrobienia: $todoTasksCount",
           ),
-
-          SizedBox(height: 8),
-          Row(
-            children: [
-              TextButton(
-                onPressed: () {
-                  setState(() {
-                    selectedFilter = "wszystkie";
-                  });
-                },
-                child: Text(
-                  "Wszystkie",
-                  style: TextStyle(
-                    color: selectedFilter == "wszystkie"
-                        ? Colors.blue
-                        : Colors.black,
-                  ),
-                ),
-              ),
-              TextButton(
-                onPressed: () {
-                  setState(() {
-                    selectedFilter = "do zrobienia";
-                  });
-                },
-                child: Text(
-                  "Do zrobienia",
-                  style: TextStyle(
-                    color: selectedFilter == "do zrobienia"
-                        ? Colors.blue
-                        : Colors.black,
-                  ),
-                ),
-              ),
-              TextButton(
-                onPressed: () {
-                  setState(() {
-                    selectedFilter = "wykonane";
-                  });
-                },
-                child: Text(
-                  "Wykonane",
-                  style: TextStyle(
-                    color: selectedFilter == "wykonane"
-                        ? Colors.blue
-                        : Colors.black,
-                  ),
-                ),
-              ),
-            ],
-          ),
-
-          SizedBox(height: 16),
-          Text("Dzisiejsze zadania"),
           Expanded(
-            child: ListView.builder(
-              itemCount: filteredTasks.length,
-              itemBuilder: (context, index) {
-                final task = filteredTasks[index];
-
-                return Dismissible(
-                  key: ValueKey(task.title),
-                  onDismissed: (direction) {
-                    setState(() {
-                      TaskRepository.tasks.remove(task);
-                    });
-
-                    ScaffoldMessenger.of(
-                      context,
-                    ).showSnackBar(SnackBar(content: Text("Zadanie usunięte")));
-                  },
-                  child: TaskCard(
-                    title: TaskRepository.tasks[index].title,
-                    subtitle:
-                        "termin: ${TaskRepository.tasks[index].deadline} | priorytet: ${TaskRepository.tasks[index].priority}",
-                    done: task.done,
-                    onChanged: (value) {
-                      setState(() {
-                        task.done = value!;
-                      });
-                    },
-
-                    onTap: () async {
-                      final Task? updatedTask = await Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => EditTaskScreen(task: task),
-                        ),
-                      );
-
-                      if (updatedTask != null) {
-                        setState(() {
-                          TaskRepository.tasks[index] = updatedTask;
-                        });
-                      }
-                    },
-                  ),
-                );
-              },
+            child: TaskListScreen(
+              onTasksLoaded: updateCounters,
             ),
           ),
         ],
-      ),*/
+      ),
       floatingActionButton: FloatingActionButton(
         onPressed: () async {
           final Task? newTask = await Navigator.push(
@@ -205,9 +119,7 @@ class _EkranState extends State<Ekran> {
             ),
           );
           if (newTask != null) {
-            setState(() {
-              TaskRepository.tasks.add(newTask);
-            });
+            await TaskLocalDatabase.addTask(newTask);
           }
         },
         child: const Icon(Icons.add),
@@ -216,32 +128,105 @@ class _EkranState extends State<Ekran> {
   }
 }
 
-class TaskListScreen extends StatelessWidget {
-  const TaskListScreen({super.key});
+class TaskListScreen extends StatefulWidget {
+  final ValueChanged<List<Task>> onTasksLoaded;
+  const TaskListScreen({
+    super.key,
+    required this.onTasksLoaded,
+  });
+
+  @override
+  State<TaskListScreen> createState() => _TaskListScreenState();
+}
+
+class _TaskListScreenState extends State<TaskListScreen> {
+  late Future<List<Task>> tasksFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    tasksFuture = loadTasks();
+  }
+
+  Future<List<Task>> loadTasks() async {
+    await TaskSyncService.loadInitialDataIfNeeded();
+    return TaskLocalDatabase.getTasks();
+  }
+
+  Future<void> addTask(Task task) async {
+    await TaskLocalDatabase.addTask(task);
+      tasksFuture = loadTasks();
+    }
 
   @override
   Widget build(BuildContext context) {
     return FutureBuilder<List<Task>>(
-      future: TaskApiService.fetchTasks(),
+      future: tasksFuture,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(
-            child: CircularProgressIndicator(),
-          );
+          return const Center(child: CircularProgressIndicator());
         }
 
         if (snapshot.hasError) {
-          return Center(
-            child: Text("Błąd: ${snapshot.error}"),
-          );
+          return Center(child: Text("Błąd: ${snapshot.error}"));
         }
 
-        final tasks = snapshot.data!;
+        final tasks = snapshot.data ?? [];
 
-        return ListView(
-          children: tasks.map((task) {
-            return Text(task.title);
-          }).toList(),
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          widget.onTasksLoaded(tasks);
+        });
+
+        return ListView.builder(
+          itemCount: tasks.length,
+          itemBuilder: (context, index) {
+            final task = tasks[index];
+
+            return Dismissible(
+              key: ValueKey(task.id),
+              onDismissed: (direction) async {
+                await TaskLocalDatabase.deleteTask(task.id);
+
+                setState(() {
+                  tasksFuture = loadTasks();
+                });
+              },
+
+              child: TaskCard(
+                title: task.title,
+                subtitle:
+                    "termin: ${task.deadline} | priorytet: ${task.priority}",
+                done: task.done,
+                onChanged: (value) async {
+                  final updatedTask = Task(
+                    id: task.id,
+                    title: task.title,
+                    deadline: task.deadline,
+                    priority: task.priority,
+                    done: value ?? false,
+                  );
+                  await TaskLocalDatabase.updateTask(updatedTask);
+                  setState(() {
+                    tasksFuture = loadTasks();
+                  });
+                },
+                onTap: () async {
+                  final Task? updatedTask = await Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => EditTaskScreen(task: task),
+                    ),
+                  );
+                  if (updatedTask != null) {
+                    await TaskLocalDatabase.updateTask(updatedTask);
+                    setState(() {
+                      tasksFuture = loadTasks();
+                    });
+                  }
+                },
+              ),
+            );
+          },
         );
       },
     );
@@ -295,6 +280,7 @@ class AddTaskScreen extends StatelessWidget {
                   deadline: deadlineController.text,
                   done: false,
                   priority: priorityController.text,
+                  id: Random().nextInt(1000000),
                 );
 
                 Navigator.pop(context, newTask);
@@ -365,6 +351,7 @@ class EditTaskScreen extends StatelessWidget {
                   deadline: deadlineController.text,
                   done: task.done,
                   priority: priorityController.text,
+                  id: task.id,
                 );
 
                 Navigator.pop(context, updatedTask);

@@ -20,6 +20,7 @@ class TaskApiService {
           deadline: "brak",
           done: todo["completed"],
           priority: "średni",
+          id: todo["id"],
         );
       }).toList();
     } else {
